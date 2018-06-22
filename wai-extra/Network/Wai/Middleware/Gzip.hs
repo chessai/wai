@@ -91,6 +91,37 @@ defaultCheckMime bs =
 -- File responses will be compressed according to the 'GzipFiles' setting.
 gzip :: GzipSettings -> Middleware
 gzip set app env sendResponse = app env $ \res ->
+  case res of
+    ResponseRaw{} -> error "RAW RESPONSE"
+    ResponseFile{} | gzipFiles set == GzipIgnore -> error "GzipIgnore instead of GzipPreCompressed"
+    _ -> if "gzip" `elem` enc && not isMSIE6 && not (isEncoded res) && (bigEnough res)
+         then
+           let
+             runAction x = case x of
+               (ResponseFile s hs file Nothing, GzipPreCompressed _) ->
+                 let compressedVersion = file ++ ".gz"
+                 in doesFileExist compressedVersion >>= \y ->
+                   if y
+                     then sendResponse $ ResponseFile s (fixHeaders hs) compressedVersion Nothing
+                     else error "file did not exist"
+               _ -> error "wrong header"
+           in runAction (res, gzipFiles set)
+         else sendResponse res
+  where
+    enc = fromMaybe [] $ (splitCommas . S8.unpack) `fmap` lookup "Accept-Encoding" (requestHeaders env)
+    ua = fromMaybe "" $ lookup hUserAgent $ requestHeaders env 
+    isMSIE6 = "MSIE 6" `S.isInfixOf` ua
+    isEncoded res = isJust $ lookup hContentEncoding $ responseHeaders res
+
+    bigEnough rsp = case contentLength (responseHeaders rsp) of
+      Nothing -> True
+      Just len -> len >= minimumLength
+
+    minimumLength = 860
+
+{-
+gzip :: GzipSettings -> Middleware
+gzip set app env sendResponse = app env $ \res ->
     case res of
         ResponseRaw{} -> sendResponse res
         ResponseFile{} | gzipFiles set == GzipIgnore -> sendResponse res
@@ -130,6 +161,7 @@ gzip set app env sendResponse = app env $ \res ->
     -- The actual number is application specific though and may need to be adjusted
     -- http://webmasters.stackexchange.com/questions/31750/what-is-recommended-minimum-object-size-for-gzip-performance-benefits
     minimumLength = 860
+-}
 
 compressFile :: Status -> [Header] -> FilePath -> FilePath -> (Response -> IO a) -> IO a
 compressFile s hs file cache sendResponse = do
